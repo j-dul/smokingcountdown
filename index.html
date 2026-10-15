@@ -35,15 +35,21 @@
   }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
+  html { background: var(--sky); }
   body {
-    background: var(--sky);
+    background: transparent;
     color: var(--ink);
     font-family: "Bricolage Grotesque", system-ui, -apple-system, "Segoe UI", sans-serif;
     display: grid;
     place-items: center;
     padding: max(2rem, env(safe-area-inset-top)) 1.25rem max(2rem, env(safe-area-inset-bottom));
+    transition: color 1.5s;
   }
   main { width: 100%; max-width: 760px; text-align: center; }
+
+  /* Sky and weather, behind everything */
+  #sky { position: fixed; inset: 0; z-index: -1; background: var(--sky); transition: background 1.5s; }
+  #wx { display: block; width: 100%; height: 100%; }
 
   h1 {
     font-size: clamp(1.9rem, 5.5vw, 3.4rem);
@@ -83,7 +89,8 @@
     border-radius: 3px;
     animation: glow 2.4s ease-in-out infinite;
   }
-  .smoke { position: absolute; right: 0; bottom: 100%; width: 40px; height: 70px; pointer-events: none; }
+  /* --drift is how far the smoke travels sideways; the weather code sets it from the wind */
+  .smoke { position: absolute; right: 0; bottom: 100%; width: 40px; height: 70px; pointer-events: none; --drift: 6px; }
   .smoke span {
     position: absolute; bottom: 0; left: 50%;
     width: 14px; height: 14px; border-radius: 50%;
@@ -96,7 +103,7 @@
   @keyframes rise {
     0%   { transform: translate(-50%, 0) scale(.6); opacity: 0; }
     20%  { opacity: 1; }
-    100% { transform: translate(-10%, -70px) scale(2.2); opacity: 0; }
+    100% { transform: translate(calc(-50% + var(--drift)), -70px) scale(2.2); opacity: 0; }
   }
   @keyframes glow { 50% { box-shadow: 0 0 18px 5px var(--ember); } }
 
@@ -121,10 +128,12 @@
     .smoke { display: none; }
     .ash::before { animation: none; }
     .paper { transition: none; }
+    body, #sky { transition: none; }
   }
 </style>
 </head>
 <body>
+<div id="sky" aria-hidden="true"><canvas id="wx"></canvas></div>
 <main>
   <h1 id="headline">Búcsú a cigitől</h1>
 
@@ -132,7 +141,7 @@
     <div class="cig">
       <div class="filter"></div>
       <div class="paper" id="paper"></div>
-      <div class="ash"><div class="smoke"><span></span><span></span><span></span></div></div>
+      <div class="ash"><div class="smoke" id="smoke"><span></span><span></span><span></span></div></div>
     </div>
   </div>
   <p class="cig-note">The cigarette burns down as the day gets closer.</p>
@@ -185,6 +194,335 @@
 
   tick();
   setInterval(tick, 1000);
+</script>
+
+<script>
+/* =====================================================================
+   Sky and weather
+   Uses the same colours, weather codes and sunrise/sunset maths as the widget.
+   Without location: a time-of-day sky on a fixed schedule (sunrise 6:00, sunset 19:30).
+   With location (only passed in by the widget when its optional module is on):
+   seasonal sunrise/sunset, the current weather animated, and smoke that leans with the wind.
+   ===================================================================== */
+(() => {
+  const DAY = 86400000;
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+  // ---------- Location from the widget link (after "#", never sent to GitHub) ----------
+  function readLocation() {
+    const p = new URLSearchParams(location.hash.slice(1));
+    const lat = parseFloat(p.get("lat")), lon = parseFloat(p.get("lon"));
+    let data = null;
+    if (isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      const w = p.get("w");
+      data = { lat: Math.round(lat * 10) / 10, lon: Math.round(lon * 10) / 10, w: w !== null && w !== "" && isFinite(+w) ? +w : null };
+      try { sessionStorage.setItem("bucsu-loc", JSON.stringify(data)); } catch (e) {}
+      // Tidy the address bar so the location isn't copied if the link is shared.
+      // It's kept for this tab only, so a reload still has it.
+      history.replaceState(null, "", location.pathname + location.search);
+    } else {
+      try { data = JSON.parse(sessionStorage.getItem("bucsu-loc")); } catch (e) {}
+    }
+    return data;
+  }
+
+  // ---------- Sky colours (same as the widget) ----------
+  const NIGHT   = ["#0b1424", "#18263d"];
+  const PREDAWN = ["#101c33", "#22335a"];
+  const DAWN    = ["#f2b896", "#8ea8d3"];
+  const MORNING = ["#cde3f2", "#a8cae4"];
+  const MIDDAY  = ["#d6e9f3", "#b2d3ea"];
+  const GOLDEN  = ["#f3cf9b", "#d8a2a2"];
+  const SUNSET  = ["#e2896b", "#5a4a7d"];
+  const DUSK    = ["#2a3158", "#151e38"];
+  const DEFAULT_SUN = { sunrise: 6, sunset: 19.5 };
+
+  function skyKeyframes({ sunrise, sunset }) {
+    const pts = [
+      [0, NIGHT], [sunrise - 1.5, PREDAWN], [sunrise, DAWN], [sunrise + 2, MORNING],
+      [(sunrise + sunset) / 2 + 0.25, MIDDAY], [sunset - 2.5, GOLDEN], [sunset, SUNSET],
+      [sunset + 1.5, DUSK], [24, NIGHT],
+    ];
+    for (let i = 1; i < pts.length - 1; i++) {
+      pts[i][0] = Math.min(Math.max(pts[i][0], pts[i - 1][0] + 0.1), 24 - (pts.length - 1 - i) * 0.1);
+    }
+    return pts;
+  }
+
+  const hexToRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const rgbToHex = c => "#" + c.map(v => Math.round(Math.min(255, Math.max(0, v))).toString(16).padStart(2, "0")).join("");
+  const mix = (a, b, t) => { const B = hexToRgb(b); return hexToRgb(a).map((v, i) => v + (B[i] - v) * t); };
+
+  function skyAt(date, frames) {
+    const h = date.getHours() + date.getMinutes() / 60;
+    let i = 0;
+    while (h >= frames[i + 1][0]) i++;
+    const [h0, [top0, bot0]] = frames[i], [h1, [top1, bot1]] = frames[i + 1];
+    const t = (h - h0) / (h1 - h0);
+    return [rgbToHex(mix(top0, top1, t)), rgbToHex(mix(bot0, bot1, t))];
+  }
+
+  function sunTimes(date, lat, lon) {
+    const rad = Math.PI / 180;
+    const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+    const N = Math.round((Date.UTC(y, m, d) - Date.UTC(y, 0, 0)) / DAY);
+    const decl = -23.44 * Math.cos(2 * Math.PI / 365 * (N + 10)) * rad;
+    const B = 2 * Math.PI * (N - 81) / 364;
+    const eot = 9.87 * Math.sin(2 * B) - 7.53 * Math.cos(B) - 1.5 * Math.sin(B);
+    const cosH = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(decl)) / (Math.cos(lat * rad) * Math.cos(decl));
+    if (cosH <= -1 || cosH >= 1) return null;
+    const halfDay = Math.acos(cosH) / rad / 15;
+    const noonUTC = 12 - lon / 15 - eot / 60;
+    const toLocal = h => { const t = new Date(Date.UTC(y, m, d) + h * 3600000); return t.getHours() + t.getMinutes() / 60; };
+    return { sunrise: toLocal(noonUTC - halfDay), sunset: toLocal(noonUTC + halfDay) };
+  }
+
+  function weatherKind(code) {
+    if (code == null) return null;
+    if (code === 0) return "clear";
+    if (code <= 2) return "partly";
+    if (code === 3) return "overcast";
+    if (code === 45 || code === 48) return "fog";
+    if (code >= 51 && code <= 57) return "drizzle";
+    if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return "rain";
+    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snow";
+    if (code >= 95) return "storm";
+    return null;
+  }
+
+  const TINT = {
+    partly: [0.15, 0], overcast: [0.6, 0.05], fog: [0.65, -0.15], drizzle: [0.55, 0.08],
+    rain: [0.65, 0.15], snow: [0.5, -0.1], storm: [0.7, 0.35],
+  };
+  function tint(hex, kind) {
+    const t = TINT[kind];
+    if (!t) return hex;
+    const [r, g, b] = hexToRgb(hex);
+    const grey = 0.3 * r + 0.59 * g + 0.11 * b;
+    const des = [r, g, b].map(v => v + (grey - v) * t[0]);
+    return rgbToHex(t[1] >= 0 ? des.map(v => v * (1 - t[1])) : des.map(v => v + (255 - v) * -t[1]));
+  }
+
+  function luminance(hex) {
+    const [r, g, b] = hexToRgb(hex).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+  const contrast = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+
+  // ---------- State ----------
+  let loc = readLocation();
+  let weather = { code: loc ? loc.w : null, windSpeed: 0, windDir: null };
+  let kind = weatherKind(weather.code);
+  let isNight = false;
+  let windX = 0;  // km/h, positive = blowing to the right of the screen
+
+  function applySky() {
+    const now = new Date();
+    const sun = (loc && sunTimes(now, loc.lat, loc.lon)) || DEFAULT_SUN;
+    const [baseTop, baseBottom] = skyAt(now, skyKeyframes(sun));
+    const top = tint(baseTop, kind), bottom = tint(baseBottom, kind);
+    const h = now.getHours() + now.getMinutes() / 60;
+    isNight = h < sun.sunrise || h > sun.sunset;
+
+    const root = document.documentElement.style;
+    $("sky").style.background = `linear-gradient(${top}, ${bottom})`;
+    root.setProperty("--sky", bottom);
+
+    // Dark or light text, whichever stays more readable against both ends of the sky
+    const worst = text => Math.min(contrast(luminance(text), luminance(top)), contrast(luminance(text), luminance(bottom)));
+    const dark = worst("#1b2a3a") >= worst("#e8eff4");
+    root.setProperty("--ink", dark ? "#1b2a3a" : "#e8eff4");
+    root.setProperty("--muted", dark ? "#4f6476" : "#b4c4d1");
+    root.setProperty("--smoke", dark ? "rgba(120, 135, 150, 0.35)" : "rgba(200, 215, 230, 0.25)");
+    root.setProperty("color-scheme", dark ? "light" : "dark");
+  }
+
+  function applyWind() {
+    windX = weather.windDir == null ? 0 : -Math.sin(weather.windDir * Math.PI / 180) * weather.windSpeed;
+    const drift = Math.max(-50, Math.min(50, 6 + windX * 1.2));
+    $("smoke").style.setProperty("--drift", drift.toFixed(1) + "px");
+  }
+
+  async function fetchWeather() {
+    if (!loc) return;
+    try {
+      const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&current=weather_code,wind_speed_10m,wind_direction_10m&timezone=auto`);
+      if (!r.ok) throw new Error(r.status);
+      const c = (await r.json()).current;
+      weather = { code: c.weather_code, windSpeed: c.wind_speed_10m || 0, windDir: c.wind_direction_10m };
+    } catch (e) {
+      // Offline or the service is down: keep the widget's reading
+    }
+    const newKind = weatherKind(weather.code);
+    const changed = newKind !== kind;
+    kind = newKind;
+    applyWind();
+    applySky();
+    if (changed) build();
+    if (reduceMotion.matches) drawFrame(0, 0);
+  }
+
+  // ---------- Animated weather ----------
+  const canvas = $("wx"), ctx = canvas.getContext("2d");
+  let W = 0, H = 0, P = {}, t = 0, nextFlash = 8, flash = 0;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+
+  // A cloud drawn once in solid white, then stamped with transparency (no seams where puffs overlap)
+  const cloud = document.createElement("canvas");
+  cloud.width = 260; cloud.height = 110;
+  (c => {
+    c.fillStyle = "#fff";
+    for (const [x, y, r] of [[60, 70, 36], [110, 50, 48], [165, 62, 40], [205, 78, 28], [95, 82, 28], [140, 84, 30]]) {
+      c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+    }
+  })(cloud.getContext("2d"));
+
+  function build() {
+    const area = W * H, n = (per, max) => Math.min(max, Math.round(area / per));
+    P = {};
+    if (isNight && (kind === "clear" || kind === "partly")) {
+      P.stars = Array.from({ length: n(9000, 160) }, () => ({ x: rnd(0, W), y: rnd(0, H * 0.75), r: rnd(0.5, 1.4), ph: rnd(0, 6.3), a: rnd(0.4, 0.9) }));
+    }
+    if (kind === "partly" || kind === "overcast") {
+      P.clouds = Array.from({ length: kind === "partly" ? 5 : 9 }, () => ({ x: rnd(-260, W), y: rnd(-20, H * 0.4), s: rnd(0.6, kind === "partly" ? 1.2 : 1.8), v: rnd(0.7, 1.3) }));
+    }
+    if (kind === "fog") {
+      P.fog = Array.from({ length: 7 }, (_, i) => ({ x: rnd(-W * 0.5, W), y: (i + 0.5) * H / 7 + rnd(-20, 20), w: rnd(W * 0.6, W * 1.2), v: rnd(0.6, 1.4) }));
+    }
+    if (kind === "drizzle" || kind === "rain" || kind === "storm") {
+      const per = kind === "drizzle" ? 9000 : kind === "rain" ? 4500 : 3000;
+      P.rain = Array.from({ length: n(per, 420) }, () => ({ x: rnd(-200, W + 200), y: rnd(0, H), v: rnd(0.8, 1.2) }));
+    }
+    if (kind === "snow") {
+      P.snow = Array.from({ length: n(6000, 260) }, () => ({ x: rnd(0, W), y: rnd(0, H), r: rnd(1.2, 3.2), v: rnd(25, 60), ph: rnd(0, 6.3) }));
+    }
+  }
+
+  function resize() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    W = innerWidth; H = innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    build();
+    if (reduceMotion.matches) drawFrame(0, 0);
+  }
+
+  const wrap = (v, min, max) => (v < min ? max - (min - v) % (max - min) : v > max ? min + (v - max) % (max - min) : v);
+
+  function drawFrame(dt, time) {
+    ctx.clearRect(0, 0, W, H);
+    const glow = isNight ? 0.5 : 1;
+
+    if (P.stars) {
+      ctx.fillStyle = "#fff";
+      for (const s of P.stars) {
+        ctx.globalAlpha = s.a * (dt ? 0.65 + 0.35 * Math.sin(time * 1.3 + s.ph) : 0.85);
+        ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    if (P.clouds) {
+      ctx.globalAlpha = (kind === "partly" ? 0.45 : 0.18) * glow;
+      for (const c of P.clouds) {
+        c.x += (6 + windX * 0.8) * c.v * dt;
+        c.x = wrap(c.x, -260 * c.s, W + 10);
+        ctx.drawImage(cloud, c.x, c.y, 260 * c.s, 110 * c.s);
+      }
+    }
+
+    if (P.fog) {
+      for (const f of P.fog) {
+        f.x += (4 + windX * 0.3) * f.v * dt;
+        f.x = wrap(f.x, -f.w, W + f.w * 0.2);
+        const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+        g.addColorStop(0, `rgba(255,255,255,${0.22 * glow})`);
+        g.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.save();
+        ctx.translate(f.x + f.w / 2, f.y);
+        ctx.scale(f.w / 2, 38);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    if (P.rain) {
+      const vy = kind === "drizzle" ? 380 : 820;
+      const len = kind === "drizzle" ? 9 : 18;
+      const vx = Math.max(-260, Math.min(260, windX * 6));
+      ctx.globalAlpha = (kind === "drizzle" ? 0.3 : 0.38) * glow;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = kind === "drizzle" ? 1 : 1.3;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      for (const d of P.rain) {
+        d.y += vy * d.v * dt; d.x += vx * d.v * dt;
+        if (d.y > H + len) { d.y = rnd(-60, -len); d.x = rnd(-200, W + 200); }
+        ctx.moveTo(d.x, d.y);
+        ctx.lineTo(d.x - (vx / vy) * len, d.y - len);
+      }
+      ctx.stroke();
+    }
+
+    if (P.snow) {
+      ctx.fillStyle = "#fff";
+      ctx.globalAlpha = 0.85 * (isNight ? 0.75 : 1);
+      for (const f of P.snow) {
+        f.y += f.v * dt;
+        f.x += (Math.sin(time * 0.9 + f.ph) * 14 + windX * 1.5) * dt;
+        if (f.y > H + 5) { f.y = -5; f.x = rnd(0, W); }
+        f.x = wrap(f.x, -5, W + 5);
+        ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // Lightning: a soft, infrequent glow rather than a hard strobe
+    if (kind === "storm" && dt) {
+      nextFlash -= dt;
+      if (nextFlash <= 0) { flash = 1; nextFlash = rnd(7, 16); }
+      if (flash > 0) {
+        ctx.globalAlpha = 0.28 * flash;
+        ctx.fillStyle = "#fffbe6";
+        ctx.fillRect(0, 0, W, H);
+        flash = Math.max(0, flash - dt * 2.8);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  let raf = 0, last = 0;
+  function loop(ts) {
+    const dt = last ? Math.min(0.05, (ts - last) / 1000) : 0;
+    last = ts; t += dt;
+    drawFrame(dt, t);
+    raf = requestAnimationFrame(loop);
+  }
+  function start() {
+    cancelAnimationFrame(raf); last = 0;
+    if (reduceMotion.matches) { drawFrame(0, 0); return; }  // a still scene for reduced motion
+    raf = requestAnimationFrame(loop);
+  }
+
+  // Pause when the page isn't visible, to save battery
+  document.addEventListener("visibilitychange", () => (document.hidden ? cancelAnimationFrame(raf) : start()));
+  reduceMotion.addEventListener?.("change", start);
+  addEventListener("resize", resize);
+  // If the widget is tapped again while this tab is open, pick up the fresh location
+  addEventListener("hashchange", () => { const l = readLocation(); if (l) { loc = l; weather.code = l.w; fetchWeather(); } });
+
+  applyWind();
+  applySky();
+  resize();
+  start();
+  fetchWeather();
+  setInterval(() => {                       // the sky changes slowly, so once a minute is plenty
+    const wasNight = isNight;
+    applySky();
+    if (wasNight !== isNight) build();
+  }, 60000);
+  setInterval(fetchWeather, 15 * 60000);    // fresh weather every 15 minutes
+})();
 </script>
 </body>
 </html>
