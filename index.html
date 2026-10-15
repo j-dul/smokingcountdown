@@ -219,7 +219,7 @@
       try { sessionStorage.setItem("bucsu-loc", JSON.stringify(data)); } catch (e) {}
       // Tidy the address bar so the location isn't copied if the link is shared.
       // It's kept for this tab only, so a reload still has it.
-      history.replaceState(null, "", location.pathname + location.search);
+      try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
     } else {
       try { data = JSON.parse(sessionStorage.getItem("bucsu-loc")); } catch (e) {}
     }
@@ -368,7 +368,7 @@
 
   // ---------- Animated weather ----------
   const canvas = $("wx"), ctx = canvas.getContext("2d");
-  let W = 0, H = 0, P = {}, t = 0, nextFlash = 8, flash = 0, bolt = null;
+  let W = 0, H = 0, P = {}, t = 0, nextFlash = 5, flash = 0, bolt = null;  // first flash after 5 seconds
   const rnd = (a, b) => a + Math.random() * (b - a);
 
   // A cloud drawn once in solid white, then stamped with transparency (no seams where puffs overlap)
@@ -564,11 +564,11 @@
       }
     }
 
-    // Lightning: a soft, infrequent glow rather than a hard strobe, with a bolt in a
+    // Lightning: a soft glow rather than a hard strobe, with a bolt in a
     // different place each time, kept to the outer edges so it isn't behind the text
     if (kind === "storm" && dt) {
       nextFlash -= dt;
-      if (nextFlash <= 0) { flash = 1; nextFlash = rnd(7, 16); bolt = makeBolt(); }
+      if (nextFlash <= 0) { flash = 1; nextFlash += rnd(6, 9); bolt = makeBolt(); }  // then every 6 to 9 seconds
       if (flash > 0) {
         ctx.globalAlpha = 0.28 * flash;
         ctx.fillStyle = "#fffbe6";
