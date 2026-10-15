@@ -227,21 +227,23 @@
   }
 
   // ---------- Sky colours (same as the widget) ----------
+  // [top of the sky, horizon]. A clear sky is blue overhead and paler near the horizon;
+  // warm colours only appear low down, in roughly the hour either side of sunrise and sunset.
   const NIGHT   = ["#0b1424", "#18263d"];
-  const PREDAWN = ["#101c33", "#22335a"];
-  const DAWN    = ["#f2b896", "#8ea8d3"];
-  const MORNING = ["#cde3f2", "#a8cae4"];
-  const MIDDAY  = ["#d6e9f3", "#b2d3ea"];
-  const GOLDEN  = ["#f3cf9b", "#d8a2a2"];
-  const SUNSET  = ["#e2896b", "#5a4a7d"];
-  const DUSK    = ["#2a3158", "#151e38"];
+  const PREDAWN = ["#121d36", "#2e3a63"];
+  const DAWN    = ["#9db4da", "#f3bf9e"];
+  const MORNING = ["#b5d6ee", "#e2edf3"];
+  const MIDDAY  = ["#a9d1ee", "#dcecf6"];
+  const GOLDEN  = ["#9fc3e2", "#f5d3a4"];
+  const SUNSET  = ["#6c80b3", "#f2925f"];
+  const DUSK    = ["#232b52", "#4b3d68"];
   const DEFAULT_SUN = { sunrise: 6, sunset: 19.5 };
 
   function skyKeyframes({ sunrise, sunset }) {
     const pts = [
-      [0, NIGHT], [sunrise - 1.5, PREDAWN], [sunrise, DAWN], [sunrise + 2, MORNING],
-      [(sunrise + sunset) / 2 + 0.25, MIDDAY], [sunset - 2.5, GOLDEN], [sunset, SUNSET],
-      [sunset + 1.5, DUSK], [24, NIGHT],
+      [0, NIGHT], [sunrise - 1, PREDAWN], [sunrise, DAWN], [sunrise + 1, MORNING],
+      [(sunrise + sunset) / 2, MIDDAY], [sunset - 2, MIDDAY] /* blue all afternoon */,
+      [sunset - 0.75, GOLDEN], [sunset, SUNSET], [sunset + 1, DUSK], [24, NIGHT],
     ];
     for (let i = 1; i < pts.length - 1; i++) {
       pts[i][0] = Math.min(Math.max(pts[i][0], pts[i - 1][0] + 0.1), 24 - (pts.length - 1 - i) * 0.1);
@@ -315,10 +317,12 @@
   let kind = weatherKind(weather.code);
   let isNight = false;
   let windX = 0;  // km/h, positive = blowing to the right of the screen
+  let sunToday = DEFAULT_SUN;
 
   function applySky() {
     const now = new Date();
     const sun = (loc && sunTimes(now, loc.lat, loc.lon)) || DEFAULT_SUN;
+    sunToday = sun;
     const [baseTop, baseBottom] = skyAt(now, skyKeyframes(sun));
     const top = tint(baseTop, kind), bottom = tint(baseBottom, kind);
     const h = now.getHours() + now.getMinutes() / 60;
@@ -407,6 +411,41 @@
     if (reduceMotion.matches) drawFrame(0, 0);
   }
 
+  // The sun follows its real path for the day: it rises at the left, peaks at midday,
+  // and sinks off the bottom of the screen at sunset, turning orange as it gets low.
+  // Shown in clear or partly cloudy weather (clouds drift in front of it), faintly through
+  // fog or overcast, and also when there's no weather data at all.
+  function drawSun(time, animate) {
+    if (!(kind == null || kind === "clear" || kind === "partly" || kind === "fog" || kind === "overcast")) return;
+    const now = new Date();
+    const h = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+    const p = (h - sunToday.sunrise) / (sunToday.sunset - sunToday.sunrise);  // 0 at sunrise, 1 at sunset
+    if (p < -0.05 || p > 1.05) return;
+    const elev = Math.sin(Math.PI * p);                      // 1 at midday, 0 on the horizon, negative once it's down
+    const r = Math.max(22, Math.min(60, Math.min(W, H) * 0.07));
+    const horizon = H + r * 0.4, highest = H * 0.13;
+    const x = W * (0.1 + 0.8 * p);
+    const y = horizon - elev * (horizon - highest);
+    const low = 1 - Math.max(0, Math.min(1, elev / 0.45));   // 0 high in the sky, 1 at the horizon
+    const core = rgbToHex(mix("#fff4d6", "#ff9a5a", low));
+    const [cr, cg, cb] = hexToRgb(core);
+    const hazy = kind === "fog" || kind === "overcast";
+    const breathe = animate ? 1 + 0.06 * Math.sin(time * 0.8) : 1;
+    const haloR = r * 4.5 * breathe;
+
+    const halo = ctx.createRadialGradient(x, y, r * 0.6, x, y, haloR);
+    halo.addColorStop(0, `rgba(${cr},${cg},${cb},${hazy ? 0.18 : 0.45})`);
+    halo.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI * 2); ctx.fill();
+
+    ctx.globalAlpha = hazy ? 0.35 : 1;
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
   const wrap = (v, min, max) => (v < min ? max - (min - v) % (max - min) : v > max ? min + (v - max) % (max - min) : v);
 
   function drawFrame(dt, time) {
@@ -420,6 +459,8 @@
         ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
       }
     }
+
+    drawSun(time, dt > 0);
 
     if (P.clouds) {
       ctx.globalAlpha = (kind === "partly" ? 0.45 : 0.18) * glow;
@@ -520,6 +561,7 @@
     const wasNight = isNight;
     applySky();
     if (wasNight !== isNight) build();
+    if (reduceMotion.matches) drawFrame(0, 0);  // keep the still scene's sun in the right place
   }, 60000);
   setInterval(fetchWeather, 15 * 60000);    // fresh weather every 15 minutes
 })();
