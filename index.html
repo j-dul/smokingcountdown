@@ -368,7 +368,7 @@
 
   // ---------- Animated weather ----------
   const canvas = $("wx"), ctx = canvas.getContext("2d");
-  let W = 0, H = 0, P = {}, t = 0, nextFlash = 8, flash = 0;
+  let W = 0, H = 0, P = {}, t = 0, nextFlash = 8, flash = 0, bolt = null;
   const rnd = (a, b) => a + Math.random() * (b - a);
 
   // A cloud drawn once in solid white, then stamped with transparency (no seams where puffs overlap)
@@ -411,39 +411,84 @@
     if (reduceMotion.matches) drawFrame(0, 0);
   }
 
-  // The sun follows its real path for the day: it rises at the left, peaks at midday,
-  // and sinks off the bottom of the screen at sunset, turning orange as it gets low.
-  // Shown in clear or partly cloudy weather (clouds drift in front of it), faintly through
-  // fog or overcast, and also when there's no weather data at all.
-  function drawSun(time, animate) {
-    if (!(kind == null || kind === "clear" || kind === "partly" || kind === "fog" || kind === "overcast")) return;
-    const now = new Date();
-    const h = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
-    const p = (h - sunToday.sunrise) / (sunToday.sunset - sunToday.sunrise);  // 0 at sunrise, 1 at sunset
-    if (p < -0.05 || p > 1.05) return;
-    const elev = Math.sin(Math.PI * p);                      // 1 at midday, 0 on the horizon, negative once it's down
-    const r = Math.max(22, Math.min(60, Math.min(W, H) * 0.07));
-    const horizon = H + r * 0.4, highest = H * 0.13;
-    const x = W * (0.1 + 0.8 * p);
-    const y = horizon - elev * (horizon - highest);
-    const low = 1 - Math.max(0, Math.min(1, elev / 0.45));   // 0 high in the sky, 1 at the horizon
-    const core = rgbToHex(mix("#fff4d6", "#ff9a5a", low));
-    const [cr, cg, cb] = hexToRgb(core);
-    const hazy = kind === "fog" || kind === "overcast";
-    const breathe = animate ? 1 + 0.06 * Math.sin(time * 0.8) : 1;
-    const haloR = r * 4.5 * breathe;
+  // How the sun and moon show through each kind of weather: [disc opacity, glow strength, glow size].
+  // Thicker cloud hides the disc and spreads its light into a wider, dimmer glow.
+  const SKY_LIGHT = {
+    clear:    [1,    1,    1],
+    partly:   [1,    1,    1],     // clouds drift in front
+    fog:      [0.55, 0.25, 0.7],   // a pale, crisp disc with almost no glow
+    drizzle:  [0.2,  0.45, 1.6],
+    overcast: [0.15, 0.4,  1.8],   // mostly a brighter patch of cloud
+    snow:     [0.25, 0.45, 1.5],
+    rain:     [0.06, 0.35, 2],
+    storm:    [0,    0.18, 2.2],   // just a dim brighter patch behind the storm clouds
+  };
 
+  // Position on the arc across the sky: p = 0 at the left horizon, 1 at the right
+  function arcPoint(p, r) {
+    const elev = Math.sin(Math.PI * p);                     // 1 at the top, 0 on the horizon
+    const horizon = H + r * 0.4, highest = H * 0.13;
+    return {
+      x: W * (0.1 + 0.8 * p),
+      y: horizon - elev * (horizon - highest),
+      low: 1 - Math.max(0, Math.min(1, elev / 0.45)),       // 0 high up, 1 at the horizon
+    };
+  }
+
+  function drawLight(x, y, r, core, glowAlpha, glowR, animate, time, speed) {
+    const [disc, glow, size] = SKY_LIGHT[kind] || SKY_LIGHT.clear;
+    if (kind === "fog") core = rgbToHex(mix(core, "#ffffff", 0.6));
+    const [cr, cg, cb] = hexToRgb(core);
+    const breathe = animate ? 1 + 0.06 * Math.sin(time * speed) : 1;
+    const haloR = r * glowR * size * breathe;
     const halo = ctx.createRadialGradient(x, y, r * 0.6, x, y, haloR);
-    halo.addColorStop(0, `rgba(${cr},${cg},${cb},${hazy ? 0.18 : 0.45})`);
+    halo.addColorStop(0, `rgba(${cr},${cg},${cb},${glowAlpha * glow})`);
     halo.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
     ctx.globalAlpha = 1;
     ctx.fillStyle = halo;
     ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI * 2); ctx.fill();
-
-    ctx.globalAlpha = hazy ? 0.35 : 1;
-    ctx.fillStyle = core;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    if (disc > 0) {
+      ctx.globalAlpha = disc;
+      ctx.fillStyle = core;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.globalAlpha = 1;
+    return disc;
+  }
+
+  const hoursNow = () => { const n = new Date(); return n.getHours() + n.getMinutes() / 60 + n.getSeconds() / 3600; };
+
+  // The sun follows its real path for the day: it rises at the left, peaks at midday,
+  // and sinks off the bottom of the screen at sunset, turning orange as it gets low.
+  function drawSun(time, animate) {
+    const p = (hoursNow() - sunToday.sunrise) / (sunToday.sunset - sunToday.sunrise);  // 0 at sunrise, 1 at sunset
+    if (p < -0.05 || p > 1.05) return;
+    const r = Math.max(22, Math.min(60, Math.min(W, H) * 0.07));
+    const { x, y, low } = arcPoint(p, r);
+    drawLight(x, y, r, rgbToHex(mix("#fff4d6", "#ff9a5a", low)), 0.45, 4.5, animate, time, 0.8);
+  }
+
+  // The moon: the sun's path in reverse. It rises at the left at sunset, peaks in the
+  // middle of the night and sinks off the bottom at sunrise.
+  function drawMoon(time, animate) {
+    const nightLen = 24 - sunToday.sunset + sunToday.sunrise;
+    let t = hoursNow() - sunToday.sunset;
+    if (t < 0) t += 24;
+    let p = t / nightLen;                       // 0 at sunset, 1 at sunrise
+    if (p > 1.05) p = (t - 24) / nightLen;      // just before sunset, still below the horizon
+    if (p < -0.05 || p > 1.05) return;
+    const r = Math.max(19, Math.min(50, Math.min(W, H) * 0.06));
+    const { x, y, low } = arcPoint(p, r);
+    const disc = drawLight(x, y, r, rgbToHex(mix("#eef1f6", "#f3d9b5", low)), 0.25, 3.5, animate, time, 0.6);
+    if (disc > 0) {
+      // A few faint darker patches so it reads as the moon rather than a light
+      ctx.globalAlpha = 0.35 * disc;
+      ctx.fillStyle = "#b9c0cc";
+      for (const [dx, dy, sz] of [[-0.35, -0.25, 0.38], [0.2, 0.15, 0.3], [-0.05, 0.45, 0.2]]) {
+        ctx.beginPath(); ctx.arc(x + dx * r, y + dy * r, sz * r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
   }
 
   const wrap = (v, min, max) => (v < min ? max - (min - v) % (max - min) : v > max ? min + (v - max) % (max - min) : v);
@@ -461,6 +506,7 @@
     }
 
     drawSun(time, dt > 0);
+    drawMoon(time, dt > 0);
 
     if (P.clouds) {
       ctx.globalAlpha = (kind === "partly" ? 0.45 : 0.18) * glow;
@@ -518,16 +564,47 @@
       }
     }
 
-    // Lightning: a soft, infrequent glow rather than a hard strobe
+    // Lightning: a soft, infrequent glow rather than a hard strobe, with a bolt in a
+    // different place each time, kept to the outer edges so it isn't behind the text
     if (kind === "storm" && dt) {
       nextFlash -= dt;
-      if (nextFlash <= 0) { flash = 1; nextFlash = rnd(7, 16); }
+      if (nextFlash <= 0) { flash = 1; nextFlash = rnd(7, 16); bolt = makeBolt(); }
       if (flash > 0) {
         ctx.globalAlpha = 0.28 * flash;
         ctx.fillStyle = "#fffbe6";
         ctx.fillRect(0, 0, W, H);
+        if (bolt) drawBolt(bolt, flash);
         flash = Math.max(0, flash - dt * 2.8);
       }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function makeBolt() {
+    const x0 = Math.random() < 0.5 ? rnd(W * 0.04, W * 0.24) : rnd(W * 0.76, W * 0.96);
+    // Stop above the headline so the bolt never reaches the text or the cigarette
+    const ceiling = $("headline").getBoundingClientRect().top - 16;
+    const bottom = Math.max(60, rnd(0.6, 1) * ceiling), steps = 6, jig = Math.min(26, W * 0.04 + 6);
+    const pts = [[x0, -4]];
+    let x = x0;
+    for (let i = 1; i <= steps; i++) {
+      x += (i % 2 ? 1 : -1) * rnd(jig * 0.4, jig) + rnd(-4, 4);
+      pts.push([x, -4 + (bottom + 4) * i / steps]);
+    }
+    const [fx, fy] = pts[3], dir = Math.random() < 0.5 ? -1 : 1;
+    const fork = [[fx, fy], [fx + dir * jig * 0.8, fy + bottom * 0.1], [fx + dir * jig * 1.2, fy + bottom * 0.22]];
+    return { pts, fork };
+  }
+
+  function drawBolt(b, strength) {
+    ctx.strokeStyle = "#fffbe6";
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    for (const [width, alpha] of [[9, 0.22], [2.6, 0.95]]) {
+      ctx.globalAlpha = alpha * strength;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      for (const line of [b.pts, b.fork]) line.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
