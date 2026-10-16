@@ -57,6 +57,8 @@
     line-height: 1.05;
     letter-spacing: -0.02em;
   }
+  .greeting { margin-top: 0.7rem; font-size: clamp(1.05rem, 2.8vw, 1.35rem); font-weight: 600; }
+  .greeting[hidden] { display: none; }
   .sub { margin-top: 2rem; color: var(--muted); font-size: 1.1rem; line-height: 1.5; }
 
   /* The cigarette */
@@ -136,6 +138,7 @@
 <div id="sky" aria-hidden="true"><canvas id="wx"></canvas></div>
 <main>
   <h1 id="headline">Búcsú a cigitől</h1>
+  <p class="greeting" id="greeting" hidden></p>
 
   <div class="cig-wrap" aria-hidden="true">
     <div class="cig">
@@ -491,6 +494,321 @@
     }
   }
 
+  // ---------- Special days: a small decoration and a greeting under the headline ----------
+  // Change NAME or a greeting here; each occasion is one line.
+  const NAME = "Petra";
+
+  // Easter Sunday for any year (the standard Gregorian calculation)
+  function easterSunday(y) {
+    const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+    const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(y, month - 1, day);
+  }
+  // The first Sunday of Advent: four Sundays before Christmas
+  function firstAdvent(y) {
+    const xmas = new Date(y, 11, 25), dow = xmas.getDay();
+    return new Date(y, 11, 25 - (dow === 0 ? 7 : dow) - 21);
+  }
+  const daysBetween = (a, b) => Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) - new Date(a.getFullYear(), a.getMonth(), a.getDate())) / DAY);
+
+  // text: the greeting (null for a decoration with no greeting that day)
+  function occasionFor(d) {
+    const m = d.getMonth() + 1, day = d.getDate(), y = d.getFullYear();
+    if (m === 10 && day === 2)  return { key: "nameday",   text: `Boldog névnapot, ${NAME}!` };     // name day
+    if (m === 10 && day === 31) return { key: "halloween", text: "Boldog Halloweent!" };
+    if (m === 12 && day === 6)  return { key: "mikulas",   text: "Boldog Mikulást!" };              // St Nicholas
+    if (m === 12 && day >= 24 && day <= 26) return { key: "christmas", text: "Boldog karácsonyt!" };
+    if ((m === 12 && day === 31) || (m === 1 && day === 1)) return { key: "newyear", text: "Boldog új évet!" };
+    if (m === 1 && day === 2)   return { key: "birthday",  text: `Boldog születésnapot, ${NAME}!` };
+    if (m === 3 && day === 8)   return { key: "nonap",     text: "Boldog nőnapot!" };               // Women's Day
+    if (m === 3 && day === 15)  return { key: "march15",   text: "Nemzeti ünnep, március 15." };    // 1848 revolution
+    if (m === 8 && day === 20)  return { key: "stephen",   text: "Szent István napja" };            // St Stephen's Day
+    const easter = daysBetween(easterSunday(y), d);
+    if (easter === 0 || easter === 1) return { key: "easter", text: "Boldog húsvétot!" };          // Sunday and Monday
+    const advent = daysBetween(firstAdvent(y), d);
+    if (advent >= 0 && !(m === 12 && day > 23)) {                                                  // until Christmas Eve
+      // One more candle each Sunday; the greeting only on the Sundays themselves
+      return { key: "advent", candles: Math.min(4, 1 + Math.floor(advent / 7)), text: advent % 7 === 0 ? "Békés adventet!" : null };
+    }
+    return null;
+  }
+
+  let occ = null, decor = {};
+  function applyOccasion() {
+    const next = occasionFor(new Date());
+    if ((next && next.key) !== (occ && occ.key)) decor = {};
+    occ = next;
+    const g = $("greeting"), text = occ && occ.text;
+    g.textContent = text || "";
+    g.hidden = !text;
+  }
+
+  // Decorations stay clear of the text: along the top edge, above the headline, or in the
+  // bottom-right corner below everything else.
+  const headTop = () => $("headline").getBoundingClientRect().top;
+  const textBottom = () => $("sub").getBoundingClientRect().bottom;
+  const decorSize = () => Math.max(28, Math.min(44, W * 0.075));
+  function cornerSpot(size) {
+    return { x: W - size * 1.4 - 14, y: Math.max(textBottom() + size * 1.6, H - size - 28) };
+  }
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  function softGlow(x, y, r, hex, a) {
+    const [cr, cg, cb] = hexToRgb(hex);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${cr},${cg},${cb},${a})`);
+    g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+    ctx.globalAlpha = 1; ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function drawLights(dt, time, anim) {
+    const spacing = Math.max(28, Math.min(44, W / 12)), span = spacing * 4, sag = Math.min(16, H * 0.025);
+    const yAt = x => 2 + sag * Math.sin(Math.PI * (((x % span) + span) % span) / span);
+    ctx.globalAlpha = 0.5; ctx.strokeStyle = "#2f3236"; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (let x = 0; x <= W + 4; x += 4) (x ? ctx.lineTo(x, yAt(x)) : ctx.moveTo(x, yAt(x)));
+    ctx.stroke();
+    const colors = ["#ffd36e", "#ff8a7a", "#8fd3a8", "#8ec5ff"];
+    let i = 0;
+    for (let x = spacing / 2; x < W; x += spacing, i++) {
+      const y = yAt(x) + 6, c = colors[i % 4];
+      const tw = anim ? 0.6 + 0.4 * Math.sin(time * 1.6 + i * 1.9) : 0.9;   // a slow, gentle twinkle
+      softGlow(x, y, 13, c, 0.45 * tw);
+      ctx.globalAlpha = 0.55 + 0.45 * tw; ctx.fillStyle = c;
+      ctx.beginPath(); ctx.ellipse(x, y, 3.3, 4.6, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPumpkin(cx, cy, s, lit) {
+    if (lit > 0) softGlow(cx, cy, s * 2.8, "#ff9a3c", 0.3 * lit);
+    for (const [dx, hw, c] of [[-0.5, 0.5, "#c95f1c"], [0.5, 0.5, "#c95f1c"], [-0.2, 0.55, "#e07b2c"], [0.2, 0.55, "#e07b2c"], [0, 0.5, "#ec8a36"]]) {
+      ctx.globalAlpha = 1; ctx.fillStyle = c;
+      ctx.beginPath(); ctx.ellipse(cx + dx * s, cy, hw * s, 0.8 * s, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = "#5b6b3a"; ctx.fillRect(cx - 0.09 * s, cy - 1.05 * s, 0.18 * s, 0.32 * s);
+    if (lit > 0) {   // the carved face glows after dark
+      ctx.globalAlpha = 0.6 + 0.4 * lit; ctx.fillStyle = "#ffd36e";
+      const tri = pts => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(cx + x * s, cy + y * s) : ctx.moveTo(cx + x * s, cy + y * s))); ctx.closePath(); ctx.fill(); };
+      tri([[-0.5, -0.05], [-0.2, -0.05], [-0.35, -0.32]]);
+      tri([[0.2, -0.05], [0.5, -0.05], [0.35, -0.32]]);
+      tri([[-0.5, 0.18], [-0.25, 0.32], [0, 0.2], [0.25, 0.32], [0.5, 0.18], [0, 0.5]]);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawBat(x, y, flap) {
+    const w = 14, lift = flap * 6;
+    ctx.save(); ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(-w * 0.5, -6 - lift, -w, -2 - lift);
+    ctx.quadraticCurveTo(-w * 0.75, 2, -w * 0.55, 1);
+    ctx.quadraticCurveTo(-w * 0.4, 4, -w * 0.25, 2);
+    ctx.quadraticCurveTo(-w * 0.12, 5, 0, 3);
+    ctx.quadraticCurveTo(w * 0.12, 5, w * 0.25, 2);
+    ctx.quadraticCurveTo(w * 0.4, 4, w * 0.55, 1);
+    ctx.quadraticCurveTo(w * 0.75, 2, w, -2 - lift);
+    ctx.quadraticCurveTo(w * 0.5, -6 - lift, 0, 0);
+    ctx.globalAlpha = 0.88; ctx.fillStyle = "#14101a"; ctx.fill();
+    if (isNight) { ctx.globalAlpha = 1; ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 1; ctx.stroke(); }
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+
+  function drawHalloween(dt, time, anim) {
+    const s = decorSize(), { x, y } = cornerSpot(s);
+    const lit = isNight ? (anim ? 0.8 + 0.2 * Math.sin(time * 7.3) * Math.sin(time * 2.9) : 0.9) : 0;
+    drawPumpkin(x, y, s, lit);
+    // Every so often a bat flutters across the sky above the headline
+    const b = decor.bat || (decor.bat = { active: false, next: 3 });
+    if (!anim) { drawBat(W * 0.78, Math.max(H * 0.07, headTop() * 0.45), 0.3); return; }
+    if (!b.active) {
+      b.next -= dt;
+      if (b.next <= 0) {
+        b.active = true; b.dir = Math.random() < 0.5 ? 1 : -1; b.x = b.dir > 0 ? -30 : W + 30;
+        b.base = rnd(H * 0.05, Math.max(H * 0.07, headTop() - 40)); b.ph = rnd(0, 6);
+      }
+    } else {
+      b.x += b.dir * 80 * dt;
+      drawBat(b.x, b.base + Math.sin(b.x / 45 + b.ph) * 12, Math.sin(time * 17));
+      if (b.x < -40 || b.x > W + 40) { b.active = false; b.next = rnd(8, 14); }
+    }
+  }
+
+  function drawBoot(dt, time, anim) {
+    const s = decorSize(), { x, y } = cornerSpot(s);
+    const sx = x + 0.17 * s, sy = y - 1.3 * s;
+    if (anim) softGlow(sx, sy, s * 0.6, "#ffe08a", 0.25 + 0.2 * Math.sin(time * 2.2));
+    ctx.globalAlpha = 1; ctx.fillStyle = "#e9b949";
+    ctx.beginPath(); ctx.arc(sx, sy, 0.2 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#c8323a";
+    rr(x - 0.1 * s, y - 0.95 * s, 0.55 * s, 1.25 * s, 0.12 * s); ctx.fill();
+    rr(x - 0.75 * s, y + 0.05 * s, 1.2 * s, 0.42 * s, 0.2 * s); ctx.fill();
+    ctx.fillStyle = "#fbf7f2";
+    rr(x - 0.2 * s, y - 1.1 * s, 0.75 * s, 0.3 * s, 0.14 * s); ctx.fill();
+  }
+
+  function drawFireworks(dt, time, anim, colors) {
+    const ceiling = Math.max(H * 0.14, headTop() - 30);
+    const f = decor.fw || (decor.fw = { bursts: [], next: 0.6 });
+    if (!anim) {   // still scene: three settled bursts
+      [[0.18, 0.5, 0], [0.78, 0.7, 1], [0.55, 0.3, 2]].forEach(([px, py, ci]) => {
+        const bx = W * px, by = Math.max(14, ceiling * py), c = colors[ci], r = Math.min(46, W * 0.09);
+        ctx.strokeStyle = c; ctx.globalAlpha = 0.75; ctx.lineWidth = 1.4; ctx.beginPath();
+        for (let i = 0; i < 18; i++) { const a = i / 18 * Math.PI * 2; ctx.moveTo(bx + Math.cos(a) * r * 0.35, by + Math.sin(a) * r * 0.35); ctx.lineTo(bx + Math.cos(a) * r, by + Math.sin(a) * r); }
+        ctx.stroke(); ctx.globalAlpha = 1;
+      });
+      return;
+    }
+    f.next -= dt;
+    if (f.next <= 0) {
+      f.next = rnd(1.1, 2.4);
+      const n = 26, sp = rnd(45, 75);
+      f.bursts.push({ x: rnd(W * 0.08, W * 0.92), y: rnd(H * 0.05, ceiling), c: colors[Math.floor(Math.random() * colors.length)], t: 0,
+        p: Array.from({ length: n }, (_, i) => ({ a: i / n * Math.PI * 2 + rnd(-0.08, 0.08), v: sp * rnd(0.85, 1.1) })) });
+    }
+    f.bursts = f.bursts.filter(b => (b.t += dt) < 1.8);
+    for (const b of f.bursts) {
+      const fade = Math.pow(1 - b.t / 1.8, 1.5), reach = 1 - Math.exp(-2.4 * b.t), droop = 16 * b.t * b.t;
+      ctx.fillStyle = b.c; ctx.strokeStyle = b.c; ctx.lineWidth = 1;
+      for (const q of b.p) {
+        const px = b.x + Math.cos(q.a) * q.v * reach, py = b.y + Math.sin(q.a) * q.v * reach + droop;
+        ctx.globalAlpha = 0.35 * fade;
+        ctx.beginPath(); ctx.moveTo(b.x + Math.cos(q.a) * q.v * reach * 0.7, b.y + Math.sin(q.a) * q.v * reach * 0.7 + droop * 0.7); ctx.lineTo(px, py); ctx.stroke();
+        ctx.globalAlpha = 0.9 * fade;
+        ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // New Year's Eve night (until sunrise on the 1st)
+  function drawNewYear(dt, time, anim) {
+    const h = hoursNow(), m = new Date().getMonth();
+    if ((m === 11 && h > sunToday.sunset) || (m === 0 && h < sunToday.sunrise)) drawFireworks(dt, time, anim, ["#ffd36e", "#ff9ab0", "#9fd8ff", "#c7a6ff", "#a8f0c6"]);
+  }
+  // St Stephen's Day: the kokárda by day, red, white and green fireworks in the evening
+  function drawStephen(dt, time, anim) {
+    if (hoursNow() > sunToday.sunset) drawFireworks(dt, time, anim, ["#e8414b", "#ffffff", "#4caf6a"]);
+    else drawKokarda(dt, time, anim);
+  }
+
+  // A kokárda, the red-white-green rosette worn on Hungarian national days
+  function drawKokarda(dt, time, anim) {
+    const s = decorSize(), { x, y } = cornerSpot(s);
+    const cy = y - s * 0.55, sway = anim ? Math.sin(time * 1.1) * 0.05 : 0;
+    for (const dir of [-1, 1]) {
+      ["#ce2939", "#ffffff", "#477050"].forEach((c, i) => {
+        const wdt = s * 0.11;
+        ctx.save(); ctx.translate(x, cy + s * 0.2); ctx.rotate(dir * 0.42 + sway);
+        ctx.globalAlpha = 1; ctx.fillStyle = c; ctx.fillRect((i - 1) * wdt - wdt / 2, 0, wdt, s * 1.15);
+        ctx.restore();
+      });
+    }
+    for (const [r, c] of [[0.55, "#ce2939"], [0.38, "#ffffff"], [0.2, "#477050"]]) {
+      ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, cy, r * s, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // Painted eggs (hímes tojás)
+  function drawEggs(dt, time, anim) {
+    const s = decorSize(), { x, y } = cornerSpot(s);
+    const eggs = [[-0.75, 0.15, "#d94b4b", "#fbe3c8", -0.12], [0.75, 0.2, "#e9b949", "#d94b4b", 0.1], [0, -0.1, "#5b8fd6", "#fbf7f2", 0]];
+    for (const [dx, dy, c, band, rot] of eggs) {
+      const rx = s * 0.36, ry = s * 0.48;
+      ctx.save(); ctx.translate(x + dx * s, y + dy * s); ctx.rotate(rot);
+      ctx.globalAlpha = 1; ctx.fillStyle = c;
+      ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.clip();   // keep the pattern inside the egg
+      ctx.strokeStyle = band; ctx.lineWidth = Math.max(1.2, s * 0.05);
+      ctx.beginPath();
+      for (let i = 0; i <= 8; i++) { const px = -rx + i * rx / 4, py = (i % 2 ? -1 : 1) * s * 0.06; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+      ctx.stroke();
+      ctx.fillStyle = band;
+      for (const ddx of [-0.4, 0, 0.4]) for (const yy of [-ry * 0.5, ry * 0.45]) { ctx.beginPath(); ctx.arc(ddx * rx, yy, s * 0.04, 0, Math.PI * 2); ctx.fill(); }
+      ctx.restore();
+    }
+  }
+
+  // An Advent wreath: three purple candles and one pink, one more lit each Sunday
+  function drawAdvent(dt, time, anim) {
+    const s = decorSize(), { x, y } = cornerSpot(s);
+    const cx = x, cy = y + s * 0.2, R = s * 1.1, Ry = s * 0.4;
+    for (const [n, off, c, sz] of [[26, 0, "#3f6b3a", 0.32], [26, 0.5, "#5d8f52", 0.24]]) {
+      ctx.globalAlpha = 1; ctx.fillStyle = c;
+      for (let i = 0; i < n; i++) {
+        const a = (i + off) / n * Math.PI * 2;
+        ctx.beginPath(); ctx.ellipse(cx + Math.cos(a) * R, cy + Math.sin(a) * Ry, s * sz, s * sz * 0.6, a, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    for (const [dx, dy, c, n] of [[-0.8, -0.05, "#7b5aa6", 1], [-0.3, -0.3, "#7b5aa6", 2], [0.3, -0.3, "#e7a1c4", 3], [0.8, -0.05, "#7b5aa6", 4]]) {
+      const px = cx + dx * s, top = cy + dy * s - s * 0.9;
+      ctx.globalAlpha = 1; ctx.fillStyle = c; rr(px - s * 0.12, top, s * 0.24, s * 0.9, s * 0.05); ctx.fill();
+      if (n <= occ.candles) {
+        const fl = anim ? 1 + 0.12 * Math.sin(time * 9 + n * 2) * Math.sin(time * 3.7 + n) : 1;   // a gentle flicker
+        softGlow(px, top - s * 0.2, s * 0.6, "#ffd36e", 0.35);
+        ctx.globalAlpha = 1; ctx.fillStyle = "#ffd36e";
+        ctx.beginPath(); ctx.ellipse(px, top - s * 0.17 * fl, s * 0.08, s * 0.16 * fl, 0, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  function drawBalloons(dt, time, anim) {
+    const s = Math.max(20, Math.min(34, W * 0.06)), { x, y } = cornerSpot(s);
+    const ax = x, ay = y + s * 0.7;   // where the strings are tied
+    const set = [[-1.5, -3.0, "#f28b82"], [0.4, -3.4, "#9ecbf0"], [-0.5, -3.9, "#fbd36b"], [1.3, -2.6, "#b8a2e3"]];
+    set.forEach(([dx, dy, c], i) => {
+      const sway = anim ? Math.sin(time * 0.9 + i * 1.7) * s * 0.25 : 0;
+      const bx = ax + dx * s + sway, by = ay + dy * s + (anim ? Math.sin(time * 1.3 + i) * s * 0.08 : 0);
+      ctx.globalAlpha = 0.6; ctx.strokeStyle = isNight ? "#c9cfd8" : "#6b7480"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.quadraticCurveTo((ax + bx) / 2 + s * 0.2, (ay + by) / 2, bx, by + s * 0.62); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.fillStyle = c;
+      ctx.beginPath(); ctx.ellipse(bx, by, s * 0.45, s * 0.56, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(bx - s * 0.1, by + s * 0.64); ctx.lineTo(bx + s * 0.1, by + s * 0.64); ctx.lineTo(bx, by + s * 0.52); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 0.45; ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.ellipse(bx - s * 0.17, by - s * 0.2, s * 0.09, s * 0.16, -0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  function drawBouquet(dt, time, anim) {
+    const s = decorSize(), { x, y } = cornerSpot(s);
+    const base = { x, y: y + s * 0.55 };
+    const tilt = anim ? Math.sin(time * 0.8) * 0.035 : 0;   // a barely-there sway
+    ctx.save(); ctx.translate(base.x, base.y); ctx.rotate(tilt);
+    const heads = [[-0.75, -1.85, "#f4a6c0"], [0, -2.2, "#fff4f0"], [0.75, -1.8, "#f7b38a"], [-0.3, -1.4, "#fff4f0"], [0.4, -1.35, "#f4a6c0"]];
+    ctx.strokeStyle = "#5f8f57"; ctx.lineWidth = Math.max(1.4, s * 0.06); ctx.globalAlpha = 1;
+    ctx.beginPath(); for (const [dx, dy] of heads) { ctx.moveTo(0, 0); ctx.lineTo(dx * s, dy * s); } ctx.stroke();
+    ctx.fillStyle = "#6fa86a";
+    ctx.beginPath(); ctx.ellipse(-0.55 * s, -0.75 * s, 0.32 * s, 0.14 * s, -0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0.55 * s, -0.7 * s, 0.32 * s, 0.14 * s, 0.5, 0, Math.PI * 2); ctx.fill();
+    for (const [dx, dy, c] of heads) {
+      const fx = dx * s, fy = dy * s, pr = 0.22 * s;
+      ctx.fillStyle = c;
+      for (let i = 0; i < 5; i++) { const a = i / 5 * Math.PI * 2 - Math.PI / 2; ctx.beginPath(); ctx.arc(fx + Math.cos(a) * pr * 1.1, fy + Math.sin(a) * pr * 1.1, pr, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = "#f6c453"; ctx.beginPath(); ctx.arc(fx, fy, pr * 0.6, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = "#f2c4d0"; rr(-0.25 * s, -0.55 * s, 0.5 * s, 0.32 * s, 0.1 * s); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawDecor(dt, time) {
+    if (!occ) return;
+    const anim = dt > 0;
+    const draw = {
+      christmas: drawLights, halloween: drawHalloween, mikulas: drawBoot, newyear: drawNewYear, birthday: drawBalloons,
+      nameday: drawBouquet, nonap: drawBouquet, march15: drawKokarda, stephen: drawStephen, easter: drawEggs, advent: drawAdvent,
+    }[occ.key];
+    if (draw) draw(dt, time, anim);
+  }
+
   const wrap = (v, min, max) => (v < min ? max - (min - v) % (max - min) : v > max ? min + (v - max) % (max - min) : v);
 
   function drawFrame(dt, time) {
@@ -564,6 +882,8 @@
       }
     }
 
+    drawDecor(dt, time);
+
     // Lightning: a soft glow rather than a hard strobe, with a bolt in a
     // different place each time, kept to the outer edges so it isn't behind the text
     if (kind === "storm" && dt) {
@@ -629,6 +949,7 @@
   // If the widget is tapped again while this tab is open, pick up the fresh location
   addEventListener("hashchange", () => { const l = readLocation(); if (l) { loc = l; weather.code = l.w; fetchWeather(); } });
 
+  applyOccasion();
   applyWind();
   applySky();
   resize();
@@ -636,6 +957,7 @@
   fetchWeather();
   setInterval(() => {                       // the sky changes slowly, so once a minute is plenty
     const wasNight = isNight;
+    applyOccasion();
     applySky();
     if (wasNight !== isNight) build();
     if (reduceMotion.matches) drawFrame(0, 0);  // keep the still scene's sun in the right place
