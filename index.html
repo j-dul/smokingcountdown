@@ -126,6 +126,40 @@
   body.done .cig-wrap, body.done .cig-note { display: none; }
   body.done .clock { margin-top: 3rem; }
 
+  /* Test mode: a small tab that switches to the testing tools, and the panel they open in */
+  .test-tab {
+    position: fixed; z-index: 20;
+    left: max(10px, env(safe-area-inset-left, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+    font: 600 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0.02em;
+    color: var(--ink); background: rgba(127, 127, 127, 0.16); border: 1px solid rgba(127, 127, 127, 0.3);
+    padding: 7px 11px; border-radius: 999px; cursor: pointer; opacity: 0.55;
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); transition: opacity 0.2s;
+  }
+  .test-tab:hover, .test-tab:focus-visible { opacity: 1; }
+  .test-panel {
+    position: fixed; inset: 0; z-index: 40; display: grid; grid-template-rows: auto 1fr;
+    background: #eef1f4; color: #1f2730;
+  }
+  .test-panel[hidden] { display: none; }
+  .test-bar {
+    display: flex; gap: 6px; overflow-x: auto;
+    padding: calc(env(safe-area-inset-top, 0px) + 8px) max(10px, env(safe-area-inset-right, 0px)) 8px max(10px, env(safe-area-inset-left, 0px));
+    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+  }
+  .test-bar button {
+    flex: 1 1 0; max-width: 200px; text-align: center;
+    font: 600 13px/1 system-ui, -apple-system, "Segoe UI", sans-serif; white-space: nowrap; cursor: pointer;
+    padding: 10px 6px; border-radius: 10px; border: 1px solid rgba(127, 127, 127, 0.35); background: transparent; color: inherit;
+  }
+  .test-bar button[aria-selected="true"] { background: #2f6fb0; border-color: #2f6fb0; color: #fff; }
+  .test-frames { position: relative; }
+  .test-frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  .test-frames iframe[hidden] { display: none; }
+  @media (prefers-color-scheme: dark) {
+    .test-panel { background: #14181d; color: #e6ebf0; }
+    .test-bar button[aria-selected="true"] { background: #84b6e8; border-color: #84b6e8; color: #10202f; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .smoke { display: none; }
     .ash::before { animation: none; }
@@ -159,6 +193,16 @@
   <p class="sub" id="sub">Countdown to 2nd January 2028</p>
 
 </main>
+
+<button type="button" class="test-tab" id="testTab">Test mode</button>
+<div class="test-panel" id="testPanel" hidden role="dialog" aria-label="Test mode">
+  <div class="test-bar" role="tablist" aria-label="Switch view">
+    <button type="button" role="tab" data-test="live" aria-selected="false">Live page</button>
+    <button type="button" role="tab" data-test="page" aria-selected="false">Page preview</button>
+    <button type="button" role="tab" data-test="widget" aria-selected="false">Widget preview</button>
+  </div>
+  <div class="test-frames" id="testFrames"></div>
+</div>
 
 <script>
   // ---- Edit these ----
@@ -963,6 +1007,51 @@
     if (reduceMotion.matches) drawFrame(0, 0);  // keep the still scene's sun in the right place
   }, 60000);
   setInterval(fetchWeather, 15 * 60000);    // fresh weather every 15 minutes
+})();
+</script>
+
+<script>
+/* =====================================================================
+   Test mode
+   The "Test mode" tab opens the testing tools (from test.html, next to this file)
+   in a panel over the page. "Live page" switches back. The tools only load when
+   the tab is used, so normal visits are unaffected. The tab is hidden whenever this
+   page is itself being shown inside one of the previews.
+   ===================================================================== */
+(() => {
+  const tab = document.getElementById("testTab"), panel = document.getElementById("testPanel"), frames = document.getElementById("testFrames");
+  if (window.self !== window.top) { tab.remove(); panel.remove(); return; }
+  const made = {};
+
+  function show(which) {
+    if (which === "live") {
+      panel.hidden = true;
+      document.body.style.overflow = "";
+      if (location.hash.startsWith("#test")) history.replaceState(null, "", location.pathname + location.search);
+      tab.focus();
+      return;
+    }
+    panel.hidden = false;
+    document.body.style.overflow = "hidden";
+    if (!made[which]) {
+      const f = document.createElement("iframe");
+      f.title = which === "page" ? "Page preview" : "Widget preview";
+      f.src = "test.html#" + which;
+      frames.appendChild(f);
+      made[which] = f;
+    }
+    for (const [k, f] of Object.entries(made)) f.hidden = k !== which;
+    panel.querySelectorAll("[data-test]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.test === which)));
+    if (location.hash !== "#test-" + which) history.replaceState(null, "", "#test-" + which);   // so a reload stays in test mode
+  }
+
+  tab.addEventListener("click", () => show("page"));
+  panel.querySelectorAll("[data-test]").forEach(b => b.addEventListener("click", () => show(b.dataset.test)));
+  addEventListener("keydown", e => { if (e.key === "Escape" && !panel.hidden) show("live"); });
+  // Open straight into test mode when the address asks for it (on load, or if it's changed by hand)
+  const fromHash = () => { const m = location.hash.match(/^#test-(page|widget)$/); if (m) show(m[1]); };
+  addEventListener("hashchange", fromHash);
+  fromHash();
 })();
 </script>
 </body>
