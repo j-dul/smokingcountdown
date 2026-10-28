@@ -735,10 +735,35 @@
     ctx.globalAlpha = 1;
   }
 
-  // New Year's Eve night (until sunrise on the 1st)
+  // New Year: fireworks on New Year's Eve night (until sunrise on the 1st), a lucky clover the rest of the time
   function drawNewYear(dt, time, anim) {
     const h = hoursNow(), m = new Date().getMonth();
     if ((m === 11 && h > sunToday.sunset) || (m === 0 && h < sunToday.sunrise)) drawFireworks(dt, time, anim, ["#ffd36e", "#ff9ab0", "#9fd8ff", "#c7a6ff", "#a8f0c6"]);
+    else drawClover(dt, time, anim);
+  }
+
+  // A four-leaf clover (lóhere), one of Hungary's New Year lucky charms
+  function drawClover(dt, time, anim) {
+    const s = decorSize(), { x, y } = cornerSpot(s);
+    const tilt = anim ? Math.sin(time * 0.8) * 0.05 : 0;
+    ctx.save(); ctx.translate(x, y - s * 0.2); ctx.rotate(tilt);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "#3f7f4c"; ctx.lineWidth = Math.max(2, s * 0.08); ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(0, s * 0.1); ctx.quadraticCurveTo(-s * 0.05, s * 0.6, s * 0.25, s * 1.0); ctx.stroke();
+    ctx.fillStyle = "#4fa45e";
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + i * Math.PI / 2, ca = Math.cos(a), sa = Math.sin(a), px = -sa, py = ca;
+      for (const side of [-1, 1]) {   // each leaf is a heart: two round lobes and a point toward the middle
+        ctx.beginPath(); ctx.arc(ca * s * 0.42 + px * side * s * 0.16, sa * s * 0.42 + py * side * s * 0.16, s * 0.22, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.moveTo(ca * s * 0.32 + px * s * 0.34, sa * s * 0.32 + py * s * 0.34);
+      ctx.lineTo(ca * s * 0.32 - px * s * 0.34, sa * s * 0.32 - py * s * 0.34);
+      ctx.lineTo(ca * s * 0.03, sa * s * 0.03);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = "#3f8a4f"; ctx.beginPath(); ctx.arc(0, 0, s * 0.1, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
   }
   // St Stephen's Day: the kokárda by day, red, white and green fireworks in the evening
   function drawStephen(dt, time, anim) {
