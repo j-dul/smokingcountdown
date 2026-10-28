@@ -513,6 +513,8 @@ function drawDecor(ctx, W, H, occ, isNight) {
     }
   }
 
+  if (k === "newyear" && !nye) wClover(ctx)   // a lucky four-leaf clover whenever it isn't fireworks time
+
   if (k === "nameday" || k === "nonap") wBouquet(ctx)
   if (k === "march15" || (k === "stephen" && !stephenNight)) wKokarda(ctx)
 
@@ -588,6 +590,31 @@ function wBouquet(ctx) {
     ctx.fillEllipse(new Rect(fx - pr * 0.6, fy - pr * 0.6, pr * 1.2, pr * 1.2))
   }
   wRounded(ctx, x - 0.25 * s, y - 0.25 * s, 0.5 * s, 0.32 * s, 0.1 * s, "#f2c4d0")
+}
+
+function wClover(ctx) {
+  // A four-leaf clover (lóhere), one of Hungary's New Year lucky charms
+  const x = 328, y = 146
+  const stem = new Path()
+  stem.move(new Point(x, y + 2))
+  stem.addQuadCurve(new Point(x + 5, y + 20), new Point(x - 1, y + 12))
+  ctx.addPath(stem)
+  ctx.setStrokeColor(new Color("#3f7f4c"))
+  ctx.setLineWidth(1.8)
+  ctx.strokePath()
+  for (let i = 0; i < 4; i++) {
+    const a = Math.PI / 4 + i * Math.PI / 2, ca = Math.cos(a), sa = Math.sin(a)
+    const px = -sa, py = ca   // across the leaf
+    // each leaf is a heart: two round lobes and a point toward the middle
+    for (const side of [-1, 1]) {
+      const lx = x + ca * 8 + px * side * 3, ly = y + sa * 8 + py * side * 3
+      ctx.setFillColor(new Color("#4fa45e"))
+      ctx.fillEllipse(new Rect(lx - 4.2, ly - 4.2, 8.4, 8.4))
+    }
+    wPoly(ctx, [[x + ca * 6 + px * 6.4, y + sa * 6 + py * 6.4], [x + ca * 6 - px * 6.4, y + sa * 6 - py * 6.4], [x + ca * 0.5, y + sa * 0.5]], "#4fa45e")
+  }
+  ctx.setFillColor(new Color("#3f8a4f"))
+  ctx.fillEllipse(new Rect(x - 2, y - 2, 4, 4))
 }
 
 function wKokarda(ctx) {
